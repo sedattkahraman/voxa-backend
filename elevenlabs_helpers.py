@@ -43,7 +43,7 @@ def _build_payload(name: str, voice_id: str, greeting: str, prompt: str, llm_mod
         # Actually in ElevenLabs schema we saw:
         # system_tool_type: "transfer_to_number", transfers: [{"number": handoff_number}]
     
-    return {
+    payload = {
         "name": name,
         "conversation_config": {
             "agent": {
@@ -62,6 +62,25 @@ def _build_payload(name: str, voice_id: str, greeting: str, prompt: str, llm_mod
             }
         }
     }
+    
+    if tools:
+        payload["conversation_config"]["agent"]["system_tools"] = tools
+        
+    # Dynamically find the webhook ID for our callback URL
+    try:
+        wh_response = requests.get("https://api.elevenlabs.io/v1/workspace/webhooks", headers=_get_headers())
+        if wh_response.ok:
+            webhooks = wh_response.json().get("webhooks", [])
+            target_webhook = next((wh for wh in webhooks if "/api/webhooks/elevenlabs" in wh.get("webhook_url", "")), None)
+            if target_webhook:
+                payload["webhooks"] = {
+                    "post_call_webhook_id": target_webhook["webhook_id"],
+                    "events": ["transcript"]  # Adjust events if needed later
+                }
+    except Exception as e:
+        print("Failed to auto-configure webhook for elevenlabs agent:", str(e))
+        
+    return payload
 
 def create_agent(name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None, negative_prompt: str = None, handoff_number: str = None, handoff_message: str = None) -> str:
     """
