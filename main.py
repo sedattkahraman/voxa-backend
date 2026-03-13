@@ -5,6 +5,8 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from pydantic import BaseModel
+import httpx
+import json
 from supabase import create_client, Client
 import requests
 import stripe
@@ -401,6 +403,84 @@ async def provision_telephony(req: ProvisionTelephonyRequest):
     except telnyx.error.APIError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/webhooks/elevenlabs")
+async def elevenlabs_webhook(request: Request):
+    """
+    Receives post-call webhooks from ElevenLabs.
+    Logs the conversation transcript, duration, and deducts credits.
+    """
+    try:
+        payload = await request.json()
+        print("ElevenLabs Webhook Payload:", json.dumps(payload))
+        
+        # Check if conversation ended
+        agent_id = payload.get("agent_id")
+        conversation_id = payload.get("conversation_id")
+        
+        # In case the JSON structure wraps it in an event object
+        if not agent_id and payload.get("event", {}).get("agent_id"):
+            agent_id = payload["event"]["agent_id"]
+            conversation_id = payload["event"]["conversation_id"]
+            
+        conversation = payload.get("conversation", {})
+        if not conversation and payload.get("event", {}).get("conversation"):
+            conversation = payload["event"]["conversation"]
+            
+        duration_secs = conversation.get("duration_secs", 0)
+        transcript = conversation.get("transcript", [])
+        recording_url = conversation.get("recording_url", "")
+        
+        if not agent_id or not conversation_id:
+            return {"status": "ignored", "reason": "Missing agent/conversation ID"}
+            
+        if duration_secs == 0:
+            return {"status": "ignored", "reason": "0 duration"}
+
+        if not supabase:
+            return {"status": "error", "reason": "Database missing"}
+
+        # 1. Lookup Profile ID
+        res = supabase.table("agent_settings").select("profile_id").eq("elevenlabs_agent_id", agent_id).execute()
+        if not res.data:
+            return {"status": "error", "reason": "Agent not found in database"}
+            
+        profile_id = res.data[0]["profile_id"]
+        
+        # 2. Calculate Cost (100 credits per minute = ~1.66 per sec)
+        cost_credits = int(duration_secs * (100.0 / 60.0))
+        
+        # 3. Deduct Credits
+        user_res = supabase.table("profiles").select("credits").eq("id", profile_id).execute()
+        if user_res.data:
+            current_credits = user_res.data[0].get("credits", 0)
+            new_credits = max(0, current_credits - cost_credits)
+            supabase.table("profiles").update({"credits": new_credits}).eq("id", profile_id).execute()
+            
+        # 4. Insert Call Log
+        log_data = {
+            "profile_id": profile_id,
+            "agent_id": agent_id,
+            "elevenlabs_call_id": conversation_id,
+            "duration_seconds": duration_secs,
+            "cost_credits": cost_credits,
+            "transcript": transcript,
+            "recording_url": recording_url
+        }
+        
+        try:
+            supabase.table("call_logs").insert(log_data).execute()
+        except Exception as e:
+            # Might fail if table doesn't exist yet, we can silently pass or log
+            print("Failed to save call_log:", str(e))
+            
+        return {"status": "success", "credits_deducted": cost_credits}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
