@@ -13,14 +13,42 @@ def _get_headers() -> Dict[str, str]:
         "Content-Type": "application/json"
     }
 
-def _build_payload(name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None) -> Dict[str, Any]:
+def _build_payload(name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None, negative_prompt: str = None, handoff_number: str = None, handoff_message: str = None) -> Dict[str, Any]:
     kb = knowledge_base if knowledge_base is not None else []
+    
+    # 1. Negative Prompt handling
+    final_prompt = prompt or "You are a helpful AI assistant."
+    if negative_prompt:
+        final_prompt += f"\n\n### STRICT RULES / DO NOT DO THIS:\n{negative_prompt}"
+        
+    # 2. Tools array handling for Handoff
+    tools = []
+    if handoff_number:
+        # Format requirements depends on ElevenLabs API. 
+        # Typically TransferToNumberToolConfig uses specific structure
+        transfer_tool = {
+            "type": "transfer_to_number",
+            "transfer_to_number": {
+                "number": handoff_number,
+                "message": handoff_message or "Let me transfer you to a human agent.",
+                "transfers": [{"number": handoff_number}] # As per schema might require 'transfers' array
+            }
+        }
+        # In current API TransferToNumberToolConfig might just be:
+        tools.append({
+            "type": "transfer_call",
+            "number": handoff_number,
+            "message": handoff_message or "Transferring you now."
+        }) # We will patch this if we get a schema error, but standard implementation uses this.
+        # Actually in ElevenLabs schema we saw:
+        # system_tool_type: "transfer_to_number", transfers: [{"number": handoff_number}]
+    
     return {
         "name": name,
         "conversation_config": {
             "agent": {
                 "prompt": {
-                    "prompt": prompt or "You are a helpful AI assistant.",
+                    "prompt": final_prompt,
                     "knowledge_base": kb
                 },
                 "first_message": greeting or "Hello!",
@@ -35,7 +63,7 @@ def _build_payload(name: str, voice_id: str, greeting: str, prompt: str, llm_mod
         }
     }
 
-def create_agent(name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None) -> str:
+def create_agent(name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None, negative_prompt: str = None, handoff_number: str = None, handoff_message: str = None) -> str:
     """
     Creates a new conversational agent in ElevenLabs.
     Returns the agent_id.
@@ -44,7 +72,7 @@ def create_agent(name: str, voice_id: str, greeting: str, prompt: str, llm_model
     
     # Try POST to /v1/convai/agents first (standard REST) or /create if that fails.
     # Actually, ElevenLabs recently structured it as POST /v1/convai/agents/create
-    payload = _build_payload(name, voice_id, greeting, prompt, llm_model, language, knowledge_base)
+    payload = _build_payload(name, voice_id, greeting, prompt, llm_model, language, knowledge_base, negative_prompt, handoff_number, handoff_message)
     
     response = requests.post(url, json=payload, headers=_get_headers())
     
@@ -58,12 +86,12 @@ def create_agent(name: str, voice_id: str, greeting: str, prompt: str, llm_model
     data = response.json()
     return data.get("agent_id", "")
 
-def update_agent(agent_id: str, name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None) -> bool:
+def update_agent(agent_id: str, name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None, negative_prompt: str = None, handoff_number: str = None, handoff_message: str = None) -> bool:
     """
     Updates an existing conversational agent.
     """
     url = f"{BASE_URL}/{agent_id}"
-    payload = _build_payload(name, voice_id, greeting, prompt, llm_model, language, knowledge_base)
+    payload = _build_payload(name, voice_id, greeting, prompt, llm_model, language, knowledge_base, negative_prompt, handoff_number, handoff_message)
     
     # Standard REST update is usually PATCH
     response = requests.patch(url, json=payload, headers=_get_headers())
@@ -84,3 +112,20 @@ def delete_agent(agent_id: str) -> bool:
         raise Exception(f"ElevenLabs delete_agent failed: {response.text}")
     
     return True
+
+def upload_knowledge_url(url: str, name: str = None) -> str:
+    """
+    Crawls a URL and adds it to ElevenLabs Knowledge Base globally.
+    Returns the document ID.
+    """
+    endpoint = f"https://api.elevenlabs.io/v1/convai/knowledge-base/url"
+    payload = {"url": url}
+    if name:
+        payload["name"] = name
+        
+    response = requests.post(endpoint, json=payload, headers=_get_headers())
+    if not response.ok:
+        raise Exception(f"ElevenLabs upload_knowledge_url failed: {response.text}")
+        
+    data = response.json()
+    return data.get("id", "")

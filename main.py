@@ -45,6 +45,14 @@ class SyncAgentRequest(BaseModel):
     system_prompt: str
     llm_model: str = "gpt-4o"
     language: str = "en"
+    negative_prompt: str = ""
+    handoff_number: str = ""
+    handoff_message: str = ""
+
+class AddKnowledgeURLRequest(BaseModel):
+    profile_id: str
+    url: str
+    name: str = ""
 
 class AgentWebhookRequest(BaseModel):
     profile_id: str
@@ -173,7 +181,10 @@ async def sync_elevenlabs_agent(req: SyncAgentRequest):
                 prompt=req.system_prompt,
                 llm_model=req.llm_model,
                 language=req.language,
-                knowledge_base=kb_items
+                knowledge_base=kb_items,
+                negative_prompt=req.negative_prompt,
+                handoff_number=req.handoff_number,
+                handoff_message=req.handoff_message
             )
         else:
             # Create a new agent
@@ -184,7 +195,10 @@ async def sync_elevenlabs_agent(req: SyncAgentRequest):
                 prompt=req.system_prompt,
                 llm_model=req.llm_model,
                 language=req.language,
-                knowledge_base=kb_items
+                knowledge_base=kb_items,
+                negative_prompt=req.negative_prompt,
+                handoff_number=req.handoff_number,
+                handoff_message=req.handoff_message
             )
             # Save the new ID back to Supabase
             supabase.table("agent_settings").update({"elevenlabs_agent_id": new_id}).eq("profile_id", req.profile_id).execute()
