@@ -4,5 +4,6 @@ requests
 supabase
 pydantic
 python-dotenv
+python-multipart
 stripe
 telnyx
