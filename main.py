@@ -13,6 +13,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from integrations.manager import IntegrationManager
 from integrations import stripe_helpers
 import elevenlabs_helpers
+import telnyx
+import time
+
+telnyx.api_key = os.getenv("TELNYX_API_KEY", "")
+
 app = FastAPI(title="Voxa Backend Integrations")
 
 # CORS for frontend callback redirects
@@ -341,6 +346,103 @@ async def stripe_webhook(request: Request):
                 }).execute()
 
     return {"status": "success"}
+
+class ProvisionTelephonyRequest(BaseModel):
+    profile_id: str
+    agent_id: str
+
+@app.post("/api/telephony/provision")
+async def provision_telephony(req: ProvisionTelephonyRequest):
+    """
+    Called from the frontend to provision a new Australian number 
+    and assign it directly to the Voxa agent.
+    """
+    if not telnyx.api_key:
+        raise HTTPException(status_code=500, detail="Telnyx API Keys missing on backend.")
+        
+    try:
+        # 1. Search AU numbers
+        available = telnyx.AvailablePhoneNumber.search(
+            filter={"country_code": "AU", "features": ["voice"]},
+            limit=1
+        )
+        if not available:
+            raise HTTPException(status_code=400, detail="No AU numbers available right now. Try again later.")
+            
+        target_number = available[0].phone_number
+        
+        # 2. Purchase the number
+        order = telnyx.NumberOrder.create(
+            phone_numbers=[{"phone_number": target_number}]
+        )
+        
+        # 3. Associate with Voxa Telnyx Application
+        telnyx_app_id = os.getenv("TELNYX_APP_ID")
+        if telnyx_app_id:
+            try:
+                # Wait for order to propagate before querying ID
+                time.sleep(3) 
+                numbers = telnyx.PhoneNumber.list(filter={"phone_number": target_number})
+                if getattr(numbers, 'data', None) and len(numbers.data) > 0:
+                    number_id = numbers.data[0].id
+                    telnyx.PhoneNumber.update(id=number_id, connection_id=telnyx_app_id)
+            except Exception as e:
+                print("Could not auto-bind connection_id. Number ordered though:", str(e))
+                pass
+                
+        # 4. Save to Agent Settings in Supabase
+        if supabase:
+            supabase.table("agent_settings").update({
+                "agent_phone_number": target_number
+            }).eq("profile_id", req.profile_id).execute()
+            
+        return {"success": True, "phone_number": target_number}
+        
+    except telnyx.error.APIError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/webhooks/telnyx")
+async def telnyx_webhook(request: Request):
+    """
+    Receives incoming call events from the Telnyx Call Control Application.
+    Instantly bridges the call to ElevenLabs Conversational AI using SIP URI.
+    """
+    try:
+        payload = await request.json()
+        data = payload.get("data", {})
+        event_type = data.get("event_type")
+        
+        if event_type == "call.initiated":
+            call_control_id = data["payload"]["call_control_id"]
+            to_number = data["payload"]["to"]
+            
+            # Lookup the ElevenLabs Agent ID configured for this phone number
+            if not supabase:
+                return {"status": "ok"}
+                
+            res = supabase.table("agent_settings").select("elevenlabs_agent_id").eq("agent_phone_number", to_number).execute()
+            agent_id = None
+            if len(res.data) > 0:
+                agent_id = res.data[0].get("elevenlabs_agent_id")
+            
+            call = telnyx.Call()
+            call.call_control_id = call_control_id
+            
+            if agent_id:
+                print(f"Routing inbound call to SIP for agent {agent_id}")
+                call.answer()
+                call.transfer(to=f"sip:{agent_id}@sip.elevenlabs.io")
+            else:
+                print(f"No agent configured for {to_number}. Hanging up.")
+                call.hangup()
+                
+    except Exception as e:
+        print(f"Telnyx Webhook Error: {str(e)}")
+        
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn
