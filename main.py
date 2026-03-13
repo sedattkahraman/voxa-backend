@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from integrations.manager import IntegrationManager
 from integrations import stripe_helpers
+import elevenlabs_helpers
 app = FastAPI(title="Voxa Backend Integrations")
 
 # CORS for frontend callback redirects
@@ -35,6 +36,13 @@ else:
 class GHLCodeExchangeRequest(BaseModel):
     code: str
     profile_id: str
+
+class SyncAgentRequest(BaseModel):
+    profile_id: str
+    agent_name: str
+    voice_id: str
+    greeting_message: str
+    system_prompt: str
 
 class AgentWebhookRequest(BaseModel):
     profile_id: str
@@ -126,6 +134,47 @@ async def agent_webhook(req: AgentWebhookRequest):
                 results[integration['provider']] = f"Error: {str(e)}"
 
     return {"success": True, "results": results}
+
+@app.post("/api/agent/sync")
+async def sync_elevenlabs_agent(req: SyncAgentRequest):
+    """
+    Syncs the Supabase agent_settings with ElevenLabs API.
+    """
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+        
+    # Check if user already has an elevenlabs_agent_id
+    user_agent = supabase.table("agent_settings").select("elevenlabs_agent_id").eq("profile_id", req.profile_id).execute()
+    
+    if len(user_agent.data) == 0:
+        raise HTTPException(status_code=404, detail="Agent settings not found in database for this profile")
+        
+    existing_id = user_agent.data[0].get("elevenlabs_agent_id")
+    
+    try:
+        if existing_id:
+            # Update existing agent
+            elevenlabs_helpers.update_agent(
+                agent_id=existing_id,
+                name=req.agent_name,
+                voice_id=req.voice_id,
+                greeting=req.greeting_message,
+                prompt=req.system_prompt
+            )
+        else:
+            # Create a new agent
+            new_id = elevenlabs_helpers.create_agent(
+                name=req.agent_name,
+                voice_id=req.voice_id,
+                greeting=req.greeting_message,
+                prompt=req.system_prompt
+            )
+            # Save the new ID back to Supabase
+            supabase.table("agent_settings").update({"elevenlabs_agent_id": new_id}).eq("profile_id", req.profile_id).execute()
+            
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ElevenLabs sync failed: {str(e)}")
 
 class CheckoutRequest(BaseModel):
     plan_id: str
