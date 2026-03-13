@@ -203,7 +203,8 @@ async def stripe_webhook(request: Request):
                 supabase.table("credit_transactions").insert({
                     "profile_id": profile_id,
                     "amount": credits_to_add,
-                    "transaction_type": "purchase",
+                    "type": "purchase",
+                    "balance_after": new_credits,
                     "description": f"Stripe Checkout: {session.get('id')}"
                 }).execute()
 
