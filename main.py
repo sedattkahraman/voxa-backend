@@ -3,10 +3,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Header
 from pydantic import BaseModel
 import httpx
 import json
+import hmac
+import hashlib
 from supabase import create_client, Client
 import requests
 import stripe
@@ -413,6 +415,24 @@ async def elevenlabs_webhook(request: Request):
     Logs the conversation transcript, duration, and deducts credits.
     """
     try:
+        # SECURITY: Validate HMAC Signature if secret is provided in .env
+        webhook_secret = os.getenv("ELEVENLABS_WEBHOOK_SECRET")
+        if webhook_secret:
+            signature = request.headers.get("elevenlabs-signature")
+            if not signature:
+                return {"status": "error", "reason": "Missing ElevenLabs-Signature header"}
+                
+            raw_body = await request.body()
+            expected_sig = hmac.new(
+                webhook_secret.encode('utf-8'),
+                raw_body,
+                hashlib.sha256
+            ).hexdigest()
+            
+            # Simple string comparison (for production use hmac.compare_digest)
+            if not hmac.compare_digest(expected_sig, signature):
+                return {"status": "error", "reason": "Invalid HMAC signature"}
+
         payload = await request.json()
         print("ElevenLabs Webhook Payload:", json.dumps(payload))
         
