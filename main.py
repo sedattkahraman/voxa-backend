@@ -193,7 +193,8 @@ async def sync_elevenlabs_agent(req: SyncAgentRequest):
                 knowledge_base=kb_items,
                 negative_prompt=req.negative_prompt,
                 handoff_number=req.handoff_number,
-                handoff_message=req.handoff_message
+                handoff_message=req.handoff_message,
+                profile_id=req.profile_id
             )
         else:
             # Create a new agent
@@ -207,7 +208,8 @@ async def sync_elevenlabs_agent(req: SyncAgentRequest):
                 knowledge_base=kb_items,
                 negative_prompt=req.negative_prompt,
                 handoff_number=req.handoff_number,
-                handoff_message=req.handoff_message
+                handoff_message=req.handoff_message,
+                profile_id=req.profile_id
             )
             # Save the new ID back to Supabase
             supabase.table("agent_settings").update({"elevenlabs_agent_id": new_id}).eq("profile_id", req.profile_id).execute()
@@ -535,9 +537,62 @@ async def telnyx_webhook(request: Request):
                 print(f"Routing inbound call to SIP for agent {agent_id}")
                 call.answer()
                 call.transfer(to=f"sip:{agent_id}@sip.elevenlabs.io")
-            else:
                 print(f"No agent configured for {to_number}. Hanging up.")
                 call.hangup()
+                
+    except Exception as e:
+        print("Telnyx webhook error:", str(e))
+        return {"status": "error"}
+
+@app.post("/api/tools/check_availability")
+async def tool_check_availability(request: Request, profile_id: str):
+    """
+    ElevenLabs Webhook Tool Endpoint.
+    Expects `date_from` and `date_to` in JSON payload.
+    """
+    try:
+        if not supabase:
+            return {"error": "Database not initialized"}
+            
+        body = await request.json()
+        date_from = body.get("date_from")
+        date_to = body.get("date_to")
+        
+        if not date_from or not date_to:
+            return {"error": "Missing date_from or date_to parameters"}
+            
+        res = supabase.table("integrations").select("*").eq("profile_id", profile_id).execute()
+        connected = [i for i in res.data if i.get("status") == "connected"]
+        
+        if not connected:
+            return {"error": "No calendar CRM connected for this user."}
+            
+        integration = connected[0]
+        
+        from integrations.manager import IntegrationManager
+        service = IntegrationManager.get_integration(integration["provider"], integration["config"])
+        
+        slots = service.get_available_slots(date_from, date_to)
+        
+        if not slots:
+            return {"message": "No available slots found for the requested dates. Please propose another date."}
+            
+        return {"available_slots": slots}
+        
+    except Exception as e:
+        print("Check availability error:", str(e))
+        return {"error": "Internal server error connecting to calendar API."}
+
+@app.post("/api/tools/book_appointment")
+async def tool_book_appointment(request: Request, profile_id: str):
+    """
+    ElevenLabs Webhook Tool Endpoint.
+    """
+    try:
+        body = await request.json()
+        return {"message": "Appointment booking mock success", "details": body}
+    except Exception as e:
+        return {"error": str(e)}
                 
     except Exception as e:
         print(f"Telnyx Webhook Error: {str(e)}")

@@ -13,7 +13,7 @@ def _get_headers() -> Dict[str, str]:
         "Content-Type": "application/json"
     }
 
-def _build_payload(name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None, negative_prompt: str = None, handoff_number: str = None, handoff_message: str = None) -> Dict[str, Any]:
+def _build_payload(name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None, negative_prompt: str = None, handoff_number: str = None, handoff_message: str = None, profile_id: str = None) -> Dict[str, Any]:
     kb = knowledge_base if knowledge_base is not None else []
     
     # 1. Negative Prompt handling
@@ -63,6 +63,70 @@ def _build_payload(name: str, voice_id: str, greeting: str, prompt: str, llm_mod
         }
     }
     
+    # 3. Inject Calendar Webhook Tools if profile_id is present
+    if profile_id:
+        base_backend_url = os.getenv("BACKEND_URL", "https://voxa-backend.onrender.com")
+        tools.append({
+            "type": "webhook",
+            "name": "check_availability",
+            "description": "Checks the clinic's or business's calendar to see when the doctor or practitioner is available. Only use this when the user asks for available times.",
+            "api_schema": {
+                "url": f"{base_backend_url}/api/tools/check_availability?profile_id={profile_id}",
+                "method": "POST",
+                "request_headers": {"Content-Type": "application/json"},
+                "path_parameters": [],
+                "query_parameters": [],
+                "request_body_schema": {
+                    "type": "object",
+                    "properties": {
+                        "date_from": {
+                            "type": "string",
+                            "description": "Start date to check availability in YYYY-MM-DD format (e.g. 2026-03-14)"
+                        },
+                        "date_to": {
+                            "type": "string",
+                            "description": "End date to check availability in YYYY-MM-DD format (e.g. 2026-03-21)"
+                        }
+                    },
+                    "required": ["date_from", "date_to"]
+                }
+            }
+        })
+        tools.append({
+            "type": "webhook",
+            "name": "book_appointment",
+            "description": "Books a specific time slot on the calendar. Only use this when the user has confirmed a specific time and provided their details.",
+            "api_schema": {
+                "url": f"{base_backend_url}/api/tools/book_appointment?profile_id={profile_id}",
+                "method": "POST",
+                "request_headers": {"Content-Type": "application/json"},
+                "path_parameters": [],
+                "query_parameters": [],
+                "request_body_schema": {
+                    "type": "object",
+                    "properties": {
+                        "service_name": {
+                            "type": "string",
+                            "description": "The service the user wants to book."
+                        },
+                        "time_slot": {
+                            "type": "string",
+                            "description": "The exact start time agreed upon"
+                        },
+                        "customer_name": {
+                            "type": "string",
+                            "description": "The customer's full name"
+                        },
+                        "customer_phone": {
+                            "type": "string",
+                            "description": "The customer's phone number"
+                        }
+                    },
+                    "required": ["service_name", "time_slot", "customer_name", "customer_phone"]
+                }
+            }
+        })
+
     if tools:
         payload["conversation_config"]["agent"]["system_tools"] = tools
         
@@ -82,7 +146,7 @@ def _build_payload(name: str, voice_id: str, greeting: str, prompt: str, llm_mod
         
     return payload
 
-def create_agent(name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None, negative_prompt: str = None, handoff_number: str = None, handoff_message: str = None) -> str:
+def create_agent(name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None, negative_prompt: str = None, handoff_number: str = None, handoff_message: str = None, profile_id: str = None) -> str:
     """
     Creates a new conversational agent in ElevenLabs.
     Returns the agent_id.
@@ -91,7 +155,7 @@ def create_agent(name: str, voice_id: str, greeting: str, prompt: str, llm_model
     
     # Try POST to /v1/convai/agents first (standard REST) or /create if that fails.
     # Actually, ElevenLabs recently structured it as POST /v1/convai/agents/create
-    payload = _build_payload(name, voice_id, greeting, prompt, llm_model, language, knowledge_base, negative_prompt, handoff_number, handoff_message)
+    payload = _build_payload(name, voice_id, greeting, prompt, llm_model, language, knowledge_base, negative_prompt, handoff_number, handoff_message, profile_id)
     
     response = requests.post(url, json=payload, headers=_get_headers())
     
@@ -105,12 +169,12 @@ def create_agent(name: str, voice_id: str, greeting: str, prompt: str, llm_model
     data = response.json()
     return data.get("agent_id", "")
 
-def update_agent(agent_id: str, name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None, negative_prompt: str = None, handoff_number: str = None, handoff_message: str = None) -> bool:
+def update_agent(agent_id: str, name: str, voice_id: str, greeting: str, prompt: str, llm_model: str = "gpt-4o", language: str = "en", knowledge_base: list = None, negative_prompt: str = None, handoff_number: str = None, handoff_message: str = None, profile_id: str = None) -> bool:
     """
     Updates an existing conversational agent.
     """
     url = f"{BASE_URL}/{agent_id}"
-    payload = _build_payload(name, voice_id, greeting, prompt, llm_model, language, knowledge_base, negative_prompt, handoff_number, handoff_message)
+    payload = _build_payload(name, voice_id, greeting, prompt, llm_model, language, knowledge_base, negative_prompt, handoff_number, handoff_message, profile_id)
     
     # Standard REST update is usually PATCH
     response = requests.patch(url, json=payload, headers=_get_headers())

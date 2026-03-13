@@ -17,18 +17,37 @@ class ClinikoIntegration:
             "User-Agent": "Voxa_Agent (support@voxaai.com)"
         }
     
-    def get_available_slots(self, date_from: datetime.date, date_to: datetime.date) -> List[Dict]:
+    def get_available_slots(self, date_from: str, date_to: str) -> List[Dict]:
         """
         Fetch available appointment times from Cliniko.
+        date_from and date_to should be ISO strings (e.g., 2026-03-14)
         """
-        # TODO: Implement GET /v1/available_times
-        # Example Request:
-        # response = requests.get(
-        #     f"{self.BASE_URL}/available_times?from={date_from}&to={date_to}",
-        #     auth=(self.api_key, 'x'),
-        #     headers=self.headers
-        # )
-        return [{"time": "2026-03-14T10:00:00Z", "practitioner_id": "123"}]
+        try:
+            response = requests.get(
+                f"{self.BASE_URL}/available_times?from={date_from}&to={date_to}",
+                auth=(self.api_key, ''),
+                headers=self.headers,
+                timeout=10
+            )
+            if not response.ok:
+                print(f"Cliniko API Error: {response.status_code} - {response.text}")
+                return []
+                
+            data = response.json()
+            available_times = data.get("available_times", [])
+            
+            # Format nicely for the LLM to read
+            slots = []
+            for slot in available_times:
+                slots.append({
+                    "start": slot.get("appointment_start"),
+                    "end": slot.get("appointment_end"),
+                    "practitioner_id": slot.get("practitioner", {}).get("links", {}).get("self")
+                })
+            return slots
+        except Exception as e:
+            print(f"Failed to fetch Cliniko slots: {str(e)}")
+            return []
 
     def book_appointment(self, patient_data: Dict, time_slot: str, appointment_type_id: str) -> bool:
         """

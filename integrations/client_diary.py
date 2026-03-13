@@ -29,9 +29,9 @@ class ClientDiaryIntegration:
         # return response.status_code == 200
         pass
 
-    def check_availability(self):
+    def get_available_slots(self, date_from: str, date_to: str, calendar_id: str = None) -> list:
         """
-        Note: Checking real-time availability via Webhooks is difficult because webhooks are generally one-way (Push).
-        Alternative approach: Client Diary syncs its calendar *out* to Google Calendar, and the Agent reads Google Calendar.
+        Since Client Diary doesn't have an inbound REST API for checking availability,
+        we return a descriptive message that the agent can read to the caller.
         """
-        raise NotImplementedError("Availability checking requires reading a synced Google Calendar for Client Diary.")
+        return [{"message": "I cannot check live availability for Client Diary at this moment, but I can take your preferred time and pass it to our team."}]
