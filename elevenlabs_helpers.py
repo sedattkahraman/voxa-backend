@@ -25,7 +25,7 @@ def _build_payload(name: str, voice_id: str, greeting: str, prompt: str) -> Dict
                 "language": "en"
             },
             "tts": {
-                "voice_id": voice_id or "rachel"
+                "voice_id": voice_id or "21m00Tcm4TlvDq8ikWAM"
             }
         }
     }
