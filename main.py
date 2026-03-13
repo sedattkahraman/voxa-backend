@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
 from pydantic import BaseModel
 from supabase import create_client, Client
 import requests
@@ -43,6 +43,8 @@ class SyncAgentRequest(BaseModel):
     voice_id: str
     greeting_message: str
     system_prompt: str
+    llm_model: str = "gpt-4o"
+    language: str = "en"
 
 class AgentWebhookRequest(BaseModel):
     profile_id: str
@@ -151,6 +153,15 @@ async def sync_elevenlabs_agent(req: SyncAgentRequest):
         
     existing_id = user_agent.data[0].get("elevenlabs_agent_id")
     
+    user_docs = supabase.table("agent_knowledge_base").select("elevenlabs_document_id, file_name").eq("profile_id", req.profile_id).execute()
+    kb_items = []
+    for doc in user_docs.data:
+        kb_items.append({
+            "id": doc.get("elevenlabs_document_id"),
+            "name": doc.get("file_name"),
+            "type": "file"
+        })
+    
     try:
         if existing_id:
             # Update existing agent
@@ -159,7 +170,10 @@ async def sync_elevenlabs_agent(req: SyncAgentRequest):
                 name=req.agent_name,
                 voice_id=req.voice_id,
                 greeting=req.greeting_message,
-                prompt=req.system_prompt
+                prompt=req.system_prompt,
+                llm_model=req.llm_model,
+                language=req.language,
+                knowledge_base=kb_items
             )
         else:
             # Create a new agent
@@ -167,7 +181,10 @@ async def sync_elevenlabs_agent(req: SyncAgentRequest):
                 name=req.agent_name,
                 voice_id=req.voice_id,
                 greeting=req.greeting_message,
-                prompt=req.system_prompt
+                prompt=req.system_prompt,
+                llm_model=req.llm_model,
+                language=req.language,
+                knowledge_base=kb_items
             )
             # Save the new ID back to Supabase
             supabase.table("agent_settings").update({"elevenlabs_agent_id": new_id}).eq("profile_id", req.profile_id).execute()
@@ -175,6 +192,58 @@ async def sync_elevenlabs_agent(req: SyncAgentRequest):
         return {"success": True}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"ElevenLabs sync failed: {str(e)}")
+
+@app.post("/api/agent/knowledge")
+async def upload_knowledge(profile_id: str = Form(...), file: UploadFile = File(...)):
+    """
+    Uploads a document to ElevenLabs Knowledge Base and links it to the user.
+    """
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    
+    content = await file.read()
+    try:
+        doc_id = elevenlabs_helpers.upload_knowledge_document(content, file.filename, file.content_type)
+        res = supabase.table("agent_knowledge_base").insert({
+            "profile_id": profile_id,
+            "file_name": file.filename,
+            "elevenlabs_document_id": doc_id
+        }).execute()
+        return {"success": True, "document": res.data[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/agent/knowledge")
+async def get_knowledge(profile_id: str):
+    """
+    Returns a list of all documents uploaded by the user.
+    """
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    docs = supabase.table("agent_knowledge_base").select("*").eq("profile_id", profile_id).execute()
+    return {"success": True, "documents": docs.data}
+
+@app.delete("/api/agent/knowledge/{doc_id}")
+async def delete_knowledge(doc_id: str, profile_id: str):
+    """
+    Deletes a document from ElevenLabs Knowledge Base and Supabase.
+    """
+    if not supabase:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    
+    # Verify ownership
+    doc = supabase.table("agent_knowledge_base").select("*").eq("id", doc_id).eq("profile_id", profile_id).execute()
+    if len(doc.data) == 0:
+        raise HTTPException(status_code=404, detail="Document not found")
+        
+    elevenlabs_doc_id = doc.data[0].get("elevenlabs_document_id")
+    
+    try:
+        elevenlabs_helpers.delete_knowledge_document(elevenlabs_doc_id)
+        supabase.table("agent_knowledge_base").delete().eq("id", doc_id).execute()
+        return {"success": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 class CheckoutRequest(BaseModel):
     plan_id: str
